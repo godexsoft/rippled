@@ -17,7 +17,6 @@
 */
 //==============================================================================
 
-#include <ripple/app/main/Application.h>
 #include <ripple/app/main/DBInit.h>
 #include <ripple/app/rdb/Vacuum.h>
 #include <ripple/basics/Log.h>
@@ -34,826 +33,506 @@
 #include <ripple/resource/Fees.h>
 #include <ripple/rpc/RPCHandler.h>
 
-#ifdef ENABLE_TESTS
-#include <ripple/beast/unit_test/match.hpp>
-#include <test/unit_test/multi_runner.h>
-#endif  // ENABLE_TESTS
-
-#include <google/protobuf/stubs/common.h>
-
-#include <boost/filesystem.hpp>
-#include <boost/predef.h>
-#include <boost/process.hpp>
-#include <boost/program_options.hpp>
-
-#include <cstdlib>
+#include <ripple/app/ledger/InboundLedger.h>
+#include <ripple/basics/StringUtilities.h>
+#include <ripple/shamap/SHAMap.h>
+#include <boost/asio.hpp>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
+#include <boost/json.hpp>
 #include <iostream>
-#include <stdexcept>
-#include <utility>
+#include <string>
+#include <test/shamap/common.h>
+#include <thread>
 
-#if BOOST_OS_WINDOWS
-#include <sys/timeb.h>
-#include <sys/types.h>
-#endif
+using tcp = boost::asio::ip::tcp;
+namespace http = boost::beast::http;
 
-// Do we know the plaform we're compiling on? If you're adding new platforms
-// modify this check accordingly.
-#if !BOOST_OS_LINUX && !BOOST_OS_WINDOWS && !BOOST_OS_MACOS
-#error Supported platforms are: Linux, Windows and MacOS
-#endif
-
-// Ensure that precisely one platform is detected.
-#if (BOOST_OS_LINUX && (BOOST_OS_WINDOWS || BOOST_OS_MACOS)) || \
-    (BOOST_OS_MACOS && (BOOST_OS_WINDOWS || BOOST_OS_LINUX)) || \
-    (BOOST_OS_WINDOWS && (BOOST_OS_LINUX || BOOST_OS_MACOS))
-#error Multiple supported platforms appear active at once
-#endif
-
-namespace po = boost::program_options;
-
-namespace ripple {
-
-bool
-adjustDescriptorLimit(int needed, beast::Journal j)
+struct LedgerObject
 {
-#ifdef RLIMIT_NOFILE
-    // Get the current limit, then adjust it to what we need.
-    struct rlimit rl;
+    std::string key;
+    std::string object;
+};
 
-    int available = 0;
+struct TransactionObject
+{
+    std::string tx_blob;
+    std::string meta;
+};
 
-    if (getrlimit(RLIMIT_NOFILE, &rl) == 0)
+boost::json::object
+request(
+    std::string const& host,
+    std::string const& port,
+    boost::json::object const& request)
+{
+    try
     {
-        // If the limit is infinite, then we are good.
-        if (rl.rlim_cur == RLIM_INFINITY)
-            available = needed;
-        else
-            available = rl.rlim_cur;
+        boost::asio::io_context ioc;
 
-        if (available < needed)
+        boost::asio::ip::tcp::resolver resolver(ioc);
+        boost::beast::tcp_stream stream(ioc);
+
+        auto const results = resolver.resolve(host, port);
+
+        stream.connect(results);
+
+        std::string target = "/";
+        boost::beast::http::request<boost::beast::http::string_body> req;
+        req.method(boost::beast::http::verb::post);
+        req.target("/");
+        req.set(boost::beast::http::field::host, host);
+        req.set(
+            boost::beast::http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+        req.body() = std::string(boost::json::serialize(request));
+        req.prepare_payload();
+
+        // Send the HTTP request to the remote host
+        boost::beast::http::write(stream, req);
+
+        // This buffer is used for reading and must be persisted
+        boost::beast::flat_buffer buffer;
+
+        // Declare a container to hold the response
+        boost::beast::http::response<boost::beast::http::string_body> res;
+
+        // Receive the HTTP response
+        boost::beast::http::read(stream, buffer, res);
+
+        // Gracefully close the socket
+        boost::beast::error_code ec;
+        stream.socket().shutdown(
+            boost::asio::ip::tcp::socket::shutdown_both, ec);
+        if (res.result() != boost::beast::http::status::ok)
         {
-            // Ignore the rlim_max, as the process may
-            // be configured to override it anyways. We
-            // ask for the number descriptors we need.
-            rl.rlim_cur = needed;
-
-            if (setrlimit(RLIMIT_NOFILE, &rl) == 0)
-                available = rl.rlim_cur;
+            std::stringstream msg;
+            msg << "Response not ok. response = " << res.body();
+            throw std::runtime_error(msg.str());
         }
-    }
 
-    if (needed > available)
+        return boost::json::parse(res.body()).as_object();
+    }
+    catch (std::exception const& e)
     {
-        j.fatal() << "Insufficient number of file descriptors: " << needed
-                  << " are needed, but only " << available << " are available.";
+        std::stringstream msg;
+        msg << "Error communicating with clio. host = " << host
+            << ", port = " << port << ", request = " << request << ", e.what() "
+            << e.what();
+        std::cout << msg.str() << std::endl;
 
-        std::cerr << "Insufficient number of file descriptors: " << needed
-                  << " are needed, but only " << available
-                  << " are available.\n";
-
-        return false;
+        throw std::runtime_error(msg.str());
     }
-#endif
+}
 
-    return true;
+std::vector<LedgerObject>
+loadInitialLedger(
+    std::string const& host,
+    std::string const& port,
+    std::uint32_t ledger_index,
+    bool outOfOrder)
+{
+    auto getRequest = [&](auto marker) {
+        boost::json::object params = {
+            {"ledger_index", ledger_index},
+            {"binary", true},
+            {"out_of_order", outOfOrder}};
+
+        if (marker)
+            params["marker"] = *marker;
+
+        boost::json::object request = {};
+        request["method"] = "ledger_data";
+
+        request["params"] = boost::json::array{params};
+
+        return request;
+    };
+
+    std::vector<LedgerObject> results = {};
+
+    std::optional<boost::json::value> marker;
+    do
+    {
+        auto req = getRequest(marker);
+        auto response = request(host, port, req);
+        if (!response.contains("result") ||
+            response["result"].as_object().contains("error"))
+        {
+            std::cout << response << std::endl;
+            continue;
+        }
+
+        auto result = response["result"].as_object();
+
+        if (result.contains("marker"))
+            marker = result.at("marker");
+        else
+            marker = {};
+
+        boost::json::array& state = result["state"].as_array();
+
+        for (auto const& ledgerObject : state)
+        {
+            boost::json::object const& obj = ledgerObject.as_object();
+
+            LedgerObject stateObject = {};
+
+            stateObject.key = obj.at("index").as_string().c_str();
+            stateObject.object = obj.at("data").as_string().c_str();
+
+            results.push_back(stateObject);
+        }
+
+    } while (marker);
+
+    return results;
+}
+
+std::vector<TransactionObject>
+fetchTransactions(
+    std::string const& host,
+    std::string const& port,
+    std::uint32_t ledger_index)
+{
+    while (true)
+    {
+        boost::json::object params = {
+            {"ledger_index", ledger_index},
+            {"binary", true},
+            {"expand", true},
+            {"transactions", true},
+        };
+
+        boost::json::object req = {};
+        req["method"] = "ledger";
+
+        req["params"] = boost::json::array{params};
+
+        auto response = request(host, port, req);
+        if (!response.contains("result") ||
+            response["result"].as_object().contains("error"))
+        {
+            std::cout << response << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        auto& result = response["result"].as_object();
+        auto& ledger = result["ledger"].as_object();
+
+        boost::json::array& txs = ledger["transactions"].as_array();
+
+        std::vector<TransactionObject> results;
+        for (auto const& tx : txs)
+        {
+            boost::json::object const& obj = tx.as_object();
+
+            TransactionObject txObject;
+            txObject.tx_blob = obj.at("tx_blob").as_string().c_str();
+            txObject.meta = obj.at("meta").as_string().c_str();
+
+            results.push_back(txObject);
+        }
+
+        return results;
+    }
+}
+
+std::tuple<
+    ripple::LedgerInfo,
+    std::vector<TransactionObject>,
+    std::vector<LedgerObject>>
+fetchTransactionsAndDiff(
+    std::string const& host,
+    std::string const& port,
+    std::uint32_t ledger_index)
+{
+    while (true)
+    {
+        boost::json::object params = {
+            {"ledger_index", ledger_index},
+            {"binary", true},
+            {"expand", true},
+            {"transactions", true},
+            {"diff", true}};
+
+        boost::json::object req = {};
+        req["method"] = "ledger";
+
+        req["params"] = boost::json::array{params};
+
+        auto response = request(host, port, req);
+        if (!response.contains("result") ||
+            response["result"].as_object().contains("error"))
+        {
+            std::cout << response << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        auto& result = response["result"].as_object();
+        auto& ledger = result["ledger"].as_object();
+
+        boost::json::array& txs = ledger["transactions"].as_array();
+
+        std::vector<TransactionObject> txResults;
+        for (auto const& tx : txs)
+        {
+            boost::json::object const& obj = tx.as_object();
+
+            TransactionObject txObject;
+            txObject.tx_blob = obj.at("tx_blob").as_string().c_str();
+            txObject.meta = obj.at("meta").as_string().c_str();
+
+            txResults.push_back(txObject);
+        }
+
+        boost::json::array& diff = ledger["diff"].as_array();
+
+        std::vector<LedgerObject> diffResults = {};
+        for (auto const& state : diff)
+        {
+            boost::json::object const& obj = state.as_object();
+
+            LedgerObject ledgerObject;
+            std::string key = obj.contains("id") ? "id" : "object_id";
+            ledgerObject.key = obj.at(key).as_string().c_str();
+            ledgerObject.object = obj.at("object").as_string().c_str();
+
+            diffResults.push_back(ledgerObject);
+        }
+
+        std::string ledgerData = ledger["ledger_data"].as_string().c_str();
+        auto lgrBlob = ripple::strUnHex(ledgerData);
+        ripple::LedgerInfo header =
+            ripple::deserializeHeader(ripple::makeSlice(*lgrBlob));
+
+        return {header, txResults, diffResults};
+    }
+}
+
+ripple::uint256
+hashTransactions(std::vector<TransactionObject> const& txs)
+{
+    ripple::tests::TestNodeFamily f{
+        beast::Journal{beast::Journal::getNullSink()}};
+
+    ripple::SHAMap txMap = ripple::SHAMap(ripple::SHAMapType::TRANSACTION, f);
+
+    for (auto& tx : txs)
+    {
+        auto txn = ripple::strUnHex(tx.tx_blob);
+        auto metaData = ripple::strUnHex(tx.meta);
+
+        ripple::SerialIter sit(ripple::Slice{txn->data(), txn->size()});
+        ripple::STTx sttx{sit};
+
+        ripple::Serializer s(txn->size() + metaData->size() + 16);
+        s.addVL(*txn);
+        s.addVL(*metaData);
+
+        auto item = ripple::make_shamapitem(sttx.getTransactionID(), s.slice());
+        txMap.addItem(
+            ripple::SHAMapNodeType::tnTRANSACTION_MD, std::move(item));
+    }
+
+    return txMap.getHash().as_uint256();
 }
 
 void
-printHelp(const po::options_description& desc)
+addToSHAMap(ripple::SHAMap& shamap, LedgerObject const& obj)
 {
-    std::cerr
-        << systemName() << "d [options] <command> <params>\n"
-        << desc << std::endl
-        << "Commands: \n"
-           "     account_currencies <account> [<ledger>]\n"
-           "     account_info <account>|<key> [<ledger>]\n"
-           "     account_lines <account> <account>|\"\" [<ledger>]\n"
-           "     account_channels <account> <account>|\"\" [<ledger>]\n"
-           "     account_objects <account> [<ledger>]\n"
-           "     account_offers <account>|<account_public_key> [<ledger>]\n"
-           "     account_tx accountID [ledger_index_min [ledger_index_max "
-           "[limit "
-           "]]] [binary]\n"
-           "     book_changes [<ledger hash|id>]\n"
-           "     book_offers <taker_pays> <taker_gets> [<taker [<ledger> "
-           "[<limit> [<proof> [<marker>]]]]]\n"
-           "     can_delete [<ledgerid>|<ledgerhash>|now|always|never]\n"
-           "     channel_authorize <private_key> <channel_id> <drops>\n"
-           "     channel_verify <public_key> <channel_id> <drops> <signature>\n"
-           "     connect <ip> [<port>]\n"
-           "     consensus_info\n"
-           "     deposit_authorized <source_account> <destination_account> "
-           "[<ledger>]\n"
-           "     download_shard [[<index> <url>]]\n"
-           "     feature [<feature> [accept|reject]]\n"
-           "     fetch_info [clear]\n"
-           "     gateway_balances [<ledger>] <issuer_account> [ <hotwallet> [ "
-           "<hotwallet> ]]\n"
-           "     get_counts\n"
-           "     json <method> <json>\n"
-           "     ledger [<id>|current|closed|validated] [full]\n"
-           "     ledger_accept\n"
-           "     ledger_cleaner\n"
-           "     ledger_closed\n"
-           "     ledger_current\n"
-           "     ledger_request <ledger>\n"
-           "     log_level [[<partition>] <severity>]\n"
-           "     logrotate\n"
-           "     manifest <public_key>\n"
-           "     node_to_shard [status|start|stop]\n"
-           "     peers\n"
-           "     ping\n"
-           "     random\n"
-           "     peer_reservations_add <public_key> [<description>]\n"
-           "     peer_reservations_del <public_key>\n"
-           "     peer_reservations_list\n"
-           "     ripple ...\n"
-           "     ripple_path_find <json> [<ledger>]\n"
-           "     server_definitions [<hash>]\n"
-           "     server_info [counters]\n"
-           "     server_state [counters]\n"
-           "     sign <private_key> <tx_json> [offline]\n"
-           "     sign_for <signer_address> <signer_private_key> <tx_json> "
-           "[offline]\n"
-           "     stop\n"
-           "     submit <tx_blob>|[<private_key> <tx_json>]\n"
-           "     submit_multisigned <tx_json>\n"
-           "     tx <id>\n"
-           "     validation_create [<seed>|<pass_phrase>|<key>]\n"
-           "     validator_info\n"
-           "     validators\n"
-           "     validator_list_sites\n"
-           "     version\n"
-           "     wallet_propose [<passphrase>]\n";
+    auto keyBlob = ripple::strUnHex(obj.key);
+    ripple::uint256 key = ripple::uint256::fromVoid(keyBlob->data());
+    auto blob = ripple::strUnHex(obj.object);
+
+    if (!blob)
+        throw std::runtime_error("INVALID PARSE HEX");
+
+    auto slice = ripple::Slice{blob->data(), blob->size()};
+    auto item = ripple::make_shamapitem(key, std::move(slice));
+    shamap.addItem(ripple::SHAMapNodeType::tnACCOUNT_STATE, std::move(item));
 }
 
-//------------------------------------------------------------------------------
-
-#ifdef ENABLE_TESTS
-/* simple unit test selector that allows a comma separated list
- * of selectors
- */
-class multi_selector
+void
+removeFromSHAMap(ripple::SHAMap& shamap, ripple::uint256 const& key)
 {
-private:
-    std::vector<beast::unit_test::selector> selectors_;
-
-public:
-    explicit multi_selector(std::string const& patterns = "")
-    {
-        std::vector<std::string> v;
-        boost::split(v, patterns, boost::algorithm::is_any_of(","));
-        selectors_.reserve(v.size());
-        std::for_each(v.begin(), v.end(), [this](std::string s) {
-            boost::trim(s);
-            if (selectors_.empty() || !s.empty())
-                selectors_.emplace_back(
-                    beast::unit_test::selector::automatch, s);
-        });
-    }
-
-    bool
-    operator()(beast::unit_test::suite_info const& s)
-    {
-        for (auto& sel : selectors_)
-            if (sel(s))
-                return true;
-        return false;
-    }
-
-    std::size_t
-    size() const
-    {
-        return selectors_.size();
-    }
-};
-
-namespace test {
-extern std::atomic<bool> envUseIPv4;
+    shamap.delItem(key);
 }
 
-template <class Runner>
-static bool
-anyMissing(Runner& runner, multi_selector const& pred)
+void
+updateSHAMapItem(ripple::SHAMap& shamap, LedgerObject const& obj)
 {
-    if (runner.tests() == 0)
-    {
-        runner.add_failures(1);
-        std::cout << "Failed: No tests run" << std::endl;
-        return true;
-    }
-    if (runner.suites() < pred.size())
-    {
-        auto const missing = pred.size() - runner.suites();
-        runner.add_failures(missing);
-        std::cout << "Failed: " << missing
-                  << " filters did not match any existing test suites"
-                  << std::endl;
-        return true;
-    }
-    return false;
+    auto keyBlob = ripple::strUnHex(obj.key);
+    ripple::uint256 key = ripple::uint256::fromVoid(keyBlob->data());
+    auto blob = ripple::strUnHex(obj.object);
+
+    if (!blob)
+        throw std::runtime_error("INVALID PARSE HEX");
+
+    auto slice = ripple::Slice{blob->data(), blob->size()};
+    auto item = ripple::make_shamapitem(key, slice);
+
+    shamap.updateGiveItem(
+        ripple::SHAMapNodeType::tnACCOUNT_STATE, std::move(item));
 }
 
-static int
-runUnitTests(
-    std::string const& pattern,
-    std::string const& argument,
-    bool quiet,
-    bool log,
-    bool child,
-    bool ipv6,
-    std::size_t num_jobs,
-    int argc,
-    char** argv)
+std::uint32_t
+getMostRecent(std::string const& url, std::string const& port)
 {
-    using namespace beast::unit_test;
-    using namespace ripple::test;
+    boost::json::object params = {{"ledger_index", "validated"}};
 
-    ripple::test::envUseIPv4 = (!ipv6);
+    boost::json::object req = {};
+    req["method"] = "ledger";
 
-    if (!child && num_jobs == 1)
-    {
-        multi_runner_parent parent_runner;
+    req["params"] = boost::json::array{params};
 
-        multi_runner_child child_runner{num_jobs, quiet, log};
-        child_runner.arg(argument);
-        multi_selector pred(pattern);
-        auto const any_failed =
-            child_runner.run_multi(pred) || anyMissing(child_runner, pred);
+    auto response = request(url, port, req);
 
-        if (any_failed)
-            return EXIT_FAILURE;
-        return EXIT_SUCCESS;
-    }
-    if (!child)
-    {
-        multi_runner_parent parent_runner;
-        std::vector<boost::process::child> children;
-
-        std::string const exe_name = argv[0];
-        std::vector<std::string> args;
-        {
-            args.reserve(argc);
-            for (int i = 1; i < argc; ++i)
-                args.emplace_back(argv[i]);
-            args.emplace_back("--unittest-child");
-        }
-
-        for (std::size_t i = 0; i < num_jobs; ++i)
-            children.emplace_back(
-                boost::process::exe = exe_name, boost::process::args = args);
-
-        int bad_child_exits = 0;
-        int terminated_child_exits = 0;
-        for (auto& c : children)
-        {
-            try
-            {
-                c.wait();
-                if (c.exit_code())
-                    ++bad_child_exits;
-            }
-            catch (...)
-            {
-                // wait throws if process was terminated with a signal
-                ++bad_child_exits;
-                ++terminated_child_exits;
-            }
-        }
-
-        parent_runner.add_failures(terminated_child_exits);
-        anyMissing(parent_runner, multi_selector(pattern));
-
-        if (parent_runner.any_failed() || bad_child_exits)
-            return EXIT_FAILURE;
-        return EXIT_SUCCESS;
-    }
-    else
-    {
-        // child
-        multi_runner_child runner{num_jobs, quiet, log};
-        runner.arg(argument);
-        auto const anyFailed = runner.run_multi(multi_selector(pattern));
-
-        if (anyFailed)
-            return EXIT_FAILURE;
-        return EXIT_SUCCESS;
-    }
+    return response["result"].as_object()["ledger_index"].as_int64();
 }
-
-#endif  // ENABLE_TESTS
-//------------------------------------------------------------------------------
 
 int
-run(int argc, char** argv)
+main(int argc, char* argv[])
 {
-    using namespace std;
-
-    beast::setCurrentThreadName(
-        "rippled: main " + BuildInfo::getVersionString());
-
-    po::variables_map vm;
-
-    std::string importText;
+    if (argc != 4 && argc != 5 && argc != 6)
     {
-        importText += "Import an existing node database (specified in the [";
-        importText += ConfigSection::importNodeDatabase();
-        importText += "] configuration file section) into the current ";
-        importText += "node database (specified in the [";
-        importText += ConfigSection::nodeDatabase();
-        importText += "] configuration file section).";
+        std::cout << "Args are invalid: usage ./rippled <startingSequence> "
+                     "<URL> <port> [use_cache] [allow_missing_transactions]";
     }
 
-    // Set up option parsing.
-    //
-    po::options_description gen("General Options");
-    gen.add_options()(
-        "conf", po::value<std::string>(), "Specify the configuration file.")(
-        "debug", "Enable normally suppressed debug logging")(
-        "help,h", "Display this message.")(
-        "newnodeid", "Generate a new node identity for this server.")(
-        "nodeid",
-        po::value<std::string>(),
-        "Specify the node identity for this server.")(
-        "quorum",
-        po::value<std::size_t>(),
-        "Override the minimum validation quorum.")(
-        "reportingReadOnly", "Run in read-only reporting mode")(
-        "silent", "No output to the console after startup.")(
-        "standalone,a", "Run with no peers.")("verbose,v", "Verbose logging.")
+    std::uint32_t startingSequence =
+        boost::lexical_cast<std::uint32_t>(argv[1]);
 
-        ("force_ledger_present_range",
-         po::value<std::string>(),
-         "Specify the range of present ledgers for testing purposes. Min and "
-         "max values are comma separated.")(
-            "version", "Display the build version.");
+    std::string const url = argv[2];
+    std::string const port = argv[3];
 
-    po::options_description data("Ledger/Data Options");
-    data.add_options()("import", importText.c_str())(
-        "ledger",
-        po::value<std::string>(),
-        "Load the specified ledger and start from the value given.")(
-        "ledgerfile",
-        po::value<std::string>(),
-        "Load the specified ledger file.")(
-        "load", "Load the current ledger from the local DB.")(
-        "net", "Get the initial ledger from the network.")(
-        "nodetoshard", "Import node store into shards")(
-        "replay", "Replay a ledger close.")(
-        "start", "Start from a fresh Ledger.")(
-        "startReporting",
-        po::value<std::string>(),
-        "Start reporting from a fresh Ledger.")(
-        "vacuum", "VACUUM the transaction db.")(
-        "valid", "Consider the initial ledger a valid network ledger.");
+    bool outOfOrder = true;
+    if (argc >= 5)
+        outOfOrder = (std::string{argv[4]} != "false");
 
-    po::options_description rpc("RPC Client Options");
-    rpc.add_options()(
-        "rpc",
-        "Perform rpc command - see below for available commands. "
-        "This is assumed if any positional parameters are provided.")(
-        "rpc_ip",
-        po::value<std::string>(),
-        "Specify the IP address for RPC command. "
-        "Format: <ip-address>[':'<port-number>]")(
-        "rpc_port",
-        po::value<std::uint16_t>(),
-        "DEPRECATED: include with rpc_ip instead. "
-        "Specify the port number for RPC command.");
+    bool allowMissingTxns = false;
+    if (argc >= 6)
+        allowMissingTxns = true;
 
-#ifdef ENABLE_TESTS
-    po::options_description test("Unit Test Options");
-    test.add_options()(
-        "quiet,q",
-        "Suppress test suite messages, "
-        "including suite/case name (at start) and test log messages.")(
-        "unittest,u",
-        po::value<std::string>()->implicit_value(""),
-        "Perform unit tests. The optional argument specifies one or "
-        "more comma-separated selectors. Each selector specifies a suite name, "
-        "suite name prefix, full-name (lib.module.suite), module, or library "
-        "(checked in that order).")(
-        "unittest-arg",
-        po::value<std::string>()->implicit_value(""),
-        "Supplies an argument string to unit tests. If provided, this argument "
-        "is made available to each suite that runs. Interpretation of the "
-        "argument is handled individually by any suite that accesses it -- "
-        "as such, it typically only make sense to provide this when running "
-        "a single suite.")(
-        "unittest-ipv6",
-        "Use IPv6 localhost when running unittests (default is IPv4).")(
-        "unittest-log",
-        "Force unit test log message output. Only useful in combination with "
-        "--quiet, in which case log messages will print but suite/case names "
-        "will not.")(
-        "unittest-jobs",
-        po::value<std::size_t>(),
-        "Number of unittest jobs to run in parallel (child processes).");
-#endif  // ENABLE_TESTS
+    if (startingSequence == 0)
+        startingSequence = getMostRecent(url, port);
 
-    // These are hidden options, not intended to be shown in the usage/help
-    // message
-    po::options_description hidden("Hidden Options");
-    hidden.add_options()(
-        "parameters",
-        po::value<vector<string>>(),
-        "Specify rpc command and parameters. This option must be repeated "
-        "for each command/param. Positional parameters also serve this "
-        "purpose, "
-        "so this option is not needed for users")
-#ifdef ENABLE_TESTS
-        ("unittest-child",
-         "For internal use only when spawning child unit test processes.")
-#else
-        ("unittest", "Disabled in this build.")(
-            "unittest-child", "Disabled in this build.")
-#endif  // ENABLE_TESTS
-            ("fg", "Deprecated: server always in foreground mode.");
-
-    // Interpret positional arguments as --parameters.
-    po::positional_options_description p;
-    p.add("parameters", -1);
-
-    po::options_description all;
-    all.add(gen)
-        .add(rpc)
-        .add(data)
-#ifdef ENABLE_TESTS
-        .add(test)
-#endif  // ENABLE_TESTS
-        .add(hidden);
-
-    po::options_description desc;
-    desc.add(gen)
-        .add(rpc)
-        .add(data)
-#ifdef ENABLE_TESTS
-        .add(test)
-#endif  // ENABLE_TESTS
-        ;
-
-    // Parse options, if no error.
-    try
-    {
-        po::store(
-            po::command_line_parser(argc, argv)
-                .options(all)   // Parse options.
-                .positional(p)  // Remainder as --parameters.
-                .run(),
-            vm);
-        po::notify(vm);  // Invoke option notify functions.
-    }
-    catch (std::exception const& ex)
-    {
-        std::cerr << "rippled: " << ex.what() << std::endl;
-        std::cerr << "Try 'rippled --help' for a list of options." << std::endl;
-        return 1;
-    }
-
-    if (vm.count("help"))
-    {
-        printHelp(desc);
-        return 0;
-    }
-
-    if (vm.count("version"))
-    {
-        std::cout << "rippled version " << BuildInfo::getVersionString()
-                  << std::endl;
-        return 0;
-    }
-
-#ifndef ENABLE_TESTS
-    if (vm.count("unittest") || vm.count("unittest-child"))
-    {
-        std::cerr << "rippled: Tests disabled in this build." << std::endl;
-        std::cerr << "Try 'rippled --help' for a list of options." << std::endl;
-        return 1;
-    }
-#else
-    // Run the unit tests if requested.
-    // The unit tests will exit the application with an appropriate return code.
-    //
-    if (vm.count("unittest"))
-    {
-        std::string argument;
-
-        if (vm.count("unittest-arg"))
-            argument = vm["unittest-arg"].as<std::string>();
-
-        std::size_t numJobs = 1;
-        bool unittestChild = false;
-        if (vm.count("unittest-jobs"))
-            numJobs = std::max(numJobs, vm["unittest-jobs"].as<std::size_t>());
-        unittestChild = bool(vm.count("unittest-child"));
-
-        return runUnitTests(
-            vm["unittest"].as<std::string>(),
-            argument,
-            bool(vm.count("quiet")),
-            bool(vm.count("unittest-log")),
-            unittestChild,
-            bool(vm.count("unittest-ipv6")),
-            numJobs,
-            argc,
-            argv);
-    }
-    else
-    {
-        if (vm.count("unittest-jobs"))
+    std::thread successorVerifier([&]() {
+        while (true)
         {
-            // unittest jobs only makes sense with `unittest`
-            std::cerr << "rippled: '--unittest-jobs' specified without "
-                         "'--unittest'.\n";
-            std::cerr << "To run the unit tests the '--unittest' option must "
-                         "be present.\n";
-            return 1;
-        }
-    }
-#endif  // ENABLE_TESTS
+            auto mostRecent = getMostRecent(url, port);
 
-    auto config = std::make_unique<Config>();
+            ripple::tests::TestNodeFamily f{
+                beast::Journal{beast::Journal::getNullSink()}};
 
-    auto configFile =
-        vm.count("conf") ? vm["conf"].as<std::string>() : std::string();
+            ripple::SHAMap stateMap =
+                ripple::SHAMap(ripple::SHAMapType::STATE, f);
 
-    // config file, quiet flag.
-    config->setup(
-        configFile,
-        bool(vm.count("quiet")),
-        bool(vm.count("silent")),
-        bool(vm.count("standalone")));
+            auto state = loadInitialLedger(url, port, mostRecent, outOfOrder);
 
-    if (vm.count("vacuum"))
-    {
-        if (config->standalone())
-        {
-            std::cerr << "vacuum not applicable in standalone mode.\n";
-            return -1;
-        }
+            for (auto const& obj : state)
+                addToSHAMap(stateMap, obj);
 
-        try
-        {
-            auto setup = setup_DatabaseCon(*config);
-            if (!doVacuumDB(setup))
-                return -1;
-        }
-        catch (std::exception const& e)
-        {
-            std::cerr << "exception " << e.what() << " in function " << __func__
-                      << std::endl;
-            return -1;
-        }
+            auto [lgrInfo, firstTxs, _] =
+                fetchTransactionsAndDiff(url, port, mostRecent);
 
-        return 0;
-    }
-
-    if (vm.contains("force_ledger_present_range"))
-    {
-        try
-        {
-            auto const r = [&vm]() -> std::vector<std::uint32_t> {
-                std::vector<std::string> strVec;
-                boost::split(
-                    strVec,
-                    vm["force_ledger_present_range"].as<std::string>(),
-                    boost::algorithm::is_any_of(","));
-                std::vector<std::uint32_t> result;
-                for (auto& s : strVec)
-                {
-                    boost::trim(s);
-                    if (!s.empty())
-                        result.push_back(std::stoi(s));
-                }
-                return result;
-            }();
-
-            if (r.size() == 2)
+            if (lgrInfo.accountHash != stateMap.getHash().as_uint256())
             {
-                if (r[0] > r[1])
-                {
-                    throw std::runtime_error(
-                        "Invalid force_ledger_present_range parameter");
-                }
-                config->FORCED_LEDGER_RANGE_PRESENT.emplace(r[0], r[1]);
-            }
-            else
-            {
+                std::cout << "FAILED TO VERIFY SUCCESSORS AT LEDGER: "
+                          << lgrInfo.seq << std::endl;
                 throw std::runtime_error(
-                    "Invalid force_ledger_present_range parameter");
-            }
-        }
-        catch (std::exception const& e)
-        {
-            std::cerr << "invalid 'force_ledger_present_range' parameter. The "
-                         "parameter must be two numbers separated by a comma. "
-                         "The first number must be <= the second."
-                      << std::endl;
-            return -1;
-        }
-    }
-
-    if (vm.count("start"))
-    {
-        config->START_UP = Config::FRESH;
-    }
-
-    if (vm.count("startReporting"))
-    {
-        config->START_UP = Config::FRESH;
-        config->START_LEDGER = vm["startReporting"].as<std::string>();
-    }
-
-    if (vm.count("reportingReadOnly"))
-    {
-        config->setReportingReadOnly(true);
-    }
-
-    if (vm.count("import"))
-        config->doImport = true;
-
-    if (vm.count("nodetoshard"))
-        config->nodeToShard = true;
-
-    if (vm.count("ledger"))
-    {
-        config->START_LEDGER = vm["ledger"].as<std::string>();
-        if (vm.count("replay"))
-            config->START_UP = Config::REPLAY;
-        else
-            config->START_UP = Config::LOAD;
-    }
-    else if (vm.count("ledgerfile"))
-    {
-        config->START_LEDGER = vm["ledgerfile"].as<std::string>();
-        config->START_UP = Config::LOAD_FILE;
-    }
-    else if (vm.count("load") || config->FAST_LOAD)
-    {
-        config->START_UP = Config::LOAD;
-    }
-
-    if (vm.count("net") && !config->FAST_LOAD)
-    {
-        if ((config->START_UP == Config::LOAD) ||
-            (config->START_UP == Config::REPLAY))
-        {
-            std::cerr << "Net and load/replay options are incompatible"
-                      << std::endl;
-            return -1;
-        }
-
-        config->START_UP = Config::NETWORK;
-    }
-
-    if (vm.count("valid"))
-    {
-        config->START_VALID = true;
-    }
-
-    // Override the RPC destination IP address. This must
-    // happen after the config file is loaded.
-    if (vm.count("rpc_ip"))
-    {
-        auto endpoint = beast::IP::Endpoint::from_string_checked(
-            vm["rpc_ip"].as<std::string>());
-        if (!endpoint)
-        {
-            std::cerr << "Invalid rpc_ip = " << vm["rpc_ip"].as<std::string>()
-                      << "\n";
-            return -1;
-        }
-
-        if (endpoint->port() == 0)
-        {
-            std::cerr << "No port specified in rpc_ip.\n";
-            if (vm.count("rpc_port"))
-            {
-                std::cerr << "WARNING: using deprecated rpc_port param.\n";
-                try
-                {
-                    endpoint =
-                        endpoint->at_port(vm["rpc_port"].as<std::uint16_t>());
-                    if (endpoint->port() == 0)
-                        throw std::domain_error("0");
-                }
-                catch (std::exception const& e)
-                {
-                    std::cerr << "Invalid rpc_port = " << e.what() << "\n";
-                    return -1;
-                }
+                    "FAILED TO VERIFY SUCCESSORS AT LEDGER: " +
+                    std::to_string(lgrInfo.seq));
             }
             else
-                return -1;
-        }
-
-        config->rpc_ip = std::move(*endpoint);
-    }
-
-    if (vm.count("quorum"))
-    {
-        try
-        {
-            config->VALIDATION_QUORUM = vm["quorum"].as<std::size_t>();
-            if (config->VALIDATION_QUORUM == std::size_t{})
             {
-                throw std::domain_error("0");
+                std::cout << "VERIFIED SUCCESSORS AT LEDGER: " << lgrInfo.seq
+                          << std::endl;
             }
         }
-        catch (std::exception const& e)
+    });
+
+    ripple::tests::TestNodeFamily f{
+        beast::Journal{beast::Journal::getNullSink()}};
+
+    ripple::SHAMap stateMap = ripple::SHAMap(ripple::SHAMapType::STATE, f);
+
+    auto state = loadInitialLedger(url, port, startingSequence, outOfOrder);
+
+    std::cout << "INITIAL LEDGER STATE IS SIZE: " << state.size() << std::endl;
+
+    for (auto const& obj : state)
+        addToSHAMap(stateMap, obj);
+
+    auto [lgrInfo, firstTxs, _] =
+        fetchTransactionsAndDiff(url, port, startingSequence);
+
+    auto stateHash = stateMap.getHash().as_uint256();
+    auto transactionHash = hashTransactions(firstTxs);
+
+    if (lgrInfo.txHash != transactionHash)
+        throw std::runtime_error(
+            "COULD NOT VERIFY INITAL LEDGER TX " +
+            std::to_string(startingSequence));
+
+    if (lgrInfo.accountHash != stateHash)
+        throw std::runtime_error(
+            "COULD NOT VERIFY INITAL ACCOUNT HASH " +
+            std::to_string(startingSequence));
+
+    std::cout << "VERIFIED LEDGER: " << std::to_string(startingSequence)
+              << std::endl;
+
+    std::thread dataVerifier([&]() {
+        while (true)
         {
-            std::cerr << "Invalid value specified for --quorum (" << e.what()
-                      << ")\n";
-            return -1;
+            ++startingSequence;
+            auto [header, txs, diffs] =
+                fetchTransactionsAndDiff(url, port, startingSequence);
+
+            transactionHash = hashTransactions(txs);
+
+            for (auto const& diff : diffs)
+            {
+                auto keyBlob = ripple::strUnHex(diff.key);
+                ripple::uint256 key =
+                    ripple::uint256::fromVoid(keyBlob->data());
+
+                if (diff.object.size() == 0)
+                    removeFromSHAMap(stateMap, key);
+                else if (stateMap.hasItem(key))
+                    updateSHAMapItem(stateMap, diff);
+                else
+                    addToSHAMap(stateMap, diff);
+            }
+
+            auto stateHash = stateMap.getHash().as_uint256();
+            if (header.txHash != transactionHash)
+            {
+                std::cout << "FAILED TO VERIFY LEDGER! Txn hash mismatch: "
+                          << std::to_string(startingSequence) << std::endl;
+                if (!allowMissingTxns)
+                    throw std::runtime_error(
+                        "FAILED TO VERIFY LEDGER " +
+                        std::to_string(startingSequence));
+            }
+            if (header.accountHash != stateHash)
+            {
+                std::cout << "FAILED TO VERIFY LEDGER! state hash mismatch: "
+                          << std::to_string(startingSequence) << std::endl;
+                throw std::runtime_error(
+                    "FAILED TO VERIFY LEDGER " +
+                    std::to_string(startingSequence));
+            }
+
+            std::cout << "VERIFIED LEDGER: " << std::to_string(startingSequence)
+                      << std::endl;
         }
-    }
+    });
+    successorVerifier.join();
+    dataVerifier.join();
 
-    // Construct the logs object at the configured severity
-    using namespace beast::severities;
-    Severity thresh = kInfo;
-
-    if (vm.count("quiet"))
-        thresh = kFatal;
-    else if (vm.count("verbose"))
-        thresh = kTrace;
-
-    auto logs = std::make_unique<Logs>(thresh);
-
-    // No arguments. Run server.
-    if (!vm.count("parameters"))
-    {
-        // TODO: this comment can be removed in a future release -
-        // say 1.7 or higher
-        if (config->had_trailing_comments())
-        {
-            JLOG(logs->journal("Application").warn())
-                << "Trailing comments were seen in your config file. "
-                << "The treatment of inline/trailing comments has changed "
-                   "recently. "
-                << "Any `#` characters NOT intended to delimit comments should "
-                   "be "
-                << "preceded by a \\";
-        }
-
-        // We want at least 1024 file descriptors. We'll
-        // tweak this further.
-        if (!adjustDescriptorLimit(1024, logs->journal("Application")))
-            return -1;
-
-        if (vm.count("debug"))
-            setDebugLogSink(logs->makeSink("Debug", beast::severities::kTrace));
-
-        auto app = make_Application(
-            std::move(config), std::move(logs), std::make_unique<TimeKeeper>());
-
-        if (!app->setup(vm))
-            return -1;
-
-        // With our configuration parsed, ensure we have
-        // enough file descriptors available:
-        if (!adjustDescriptorLimit(
-                app->fdRequired(), app->logs().journal("Application")))
-            return -1;
-
-        // Start the server
-        app->start(true /*start timers*/);
-
-        // Block until we get a stop RPC.
-        app->run();
-
-        return 0;
-    }
-
-    // We have an RPC command to process:
-    beast::setCurrentThreadName("rippled: rpc");
-    return RPCCall::fromCommandLine(
-        *config, vm["parameters"].as<std::vector<std::string>>(), *logs);
-}
-
-}  // namespace ripple
-
-int
-main(int argc, char** argv)
-{
-#if BOOST_OS_WINDOWS
-    {
-        // Work around for https://svn.boost.org/trac/boost/ticket/10657
-        // Reported against boost version 1.56.0.  If an application's
-        // first call to GetTimeZoneInformation is from a coroutine, an
-        // unhandled exception is generated.  A workaround is to call
-        // GetTimeZoneInformation at least once before launching any
-        // coroutines.  At the time of this writing the _ftime call is
-        // used to initialize the timezone information.
-        struct _timeb t;
-#ifdef _INC_TIME_INL
-        _ftime_s(&t);
-#else
-        _ftime(&t);
-#endif
-    }
-#endif
-
-    atexit(&google::protobuf::ShutdownProtobufLibrary);
-
-    return ripple::run(argc, argv);
+    return 0;
 }
