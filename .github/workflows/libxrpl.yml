@@ -1,0 +1,21 @@
+name: libxrpl
+on:
+  pull_request:
+    paths:
+      - 'src/ripple/protocol/impl/BuildInfo.cpp'
+      - '.github/workflows/libxrpl.yml'
+    branches: [release]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: [self-hosted, heavy]
+    container: rippleci/rippled-build-ubuntu:aaf5e3e
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: test
+        run: |
+          conan --version
