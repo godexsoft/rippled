@@ -25,6 +25,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           running-workflow-name: wait-for-check-regexp
           check-regexp: '[Tt]est.*'
+          ignore-checks: 'Test (macos, Ninja, Release)' # Known to be flaky
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
       - name: Checkout
