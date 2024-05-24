@@ -19,13 +19,11 @@ jobs:
     runs-on: [self-hosted, heavy]
     container: rippleci/rippled-build-ubuntu:aaf5e3e
     steps:
-      - name: Wait for all tests to succeed
+      - name: Wait for other checks to succeed
         uses: lewagon/wait-on-check-action@v1.3.4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          running-workflow-name: wait-for-check-regexp
-          check-regexp: '[Tt]est.*'
-          ignore-checks: 'macos' # Known to be flaky
+          running-workflow-name: 'Publish libXRPL'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
       - name: Checkout
