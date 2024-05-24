@@ -19,12 +19,12 @@ jobs:
     runs-on: [self-hosted, heavy]
     container: rippleci/rippled-build-ubuntu:aaf5e3e
     steps:
-      - name: Wait for all checks to succeed
+      - name: Wait for all tests to succeed
         uses: lewagon/wait-on-check-action@v1.3.4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           running-workflow-name: wait-for-check-regexp
-          check-regexp: 'Test.*'
+          check-regexp: '[Tt]est.*'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
       - name: Checkout
