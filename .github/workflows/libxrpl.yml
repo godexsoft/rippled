@@ -15,9 +15,17 @@ concurrency:
 
 jobs:
   publish:
+    name: Publish libXRPL
     runs-on: [self-hosted, heavy]
     container: rippleci/rippled-build-ubuntu:aaf5e3e
     steps:
+      - name: Wait for all checks to succeed
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.ref }}
+          running-workflow-name: 'Publish libXRPL'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
       - name: Checkout
         uses: actions/checkout@v4
       - name: Unlock Conan
