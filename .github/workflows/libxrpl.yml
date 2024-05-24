@@ -24,7 +24,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           running-workflow-name: wait-for-check-regexp
-          check-regexp: 'test .*'
+          check-regexp: 'Test.*'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
       - name: Checkout
