@@ -68,7 +68,7 @@ jobs:
         run: |
           echo "conan upload version ${{ steps.version.outputs.version }}"
           echo outcome=$(conan upload xrpl/${{ steps.version.outputs.version }} --remote ripple --confirm >&2 \
-            && echo success || echo failure | tee ${GITHUB_OUTPUT}
+            && echo success || echo failure) | tee ${GITHUB_OUTPUT}
       - name: Notify Clio about new version
         if: (steps.upload.outputs.outcome == 'success')
         shell: bash
