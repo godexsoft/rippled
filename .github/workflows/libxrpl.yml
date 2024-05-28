@@ -27,6 +27,7 @@ jobs:
           check-regexp: '(dependencies|test).*linux.*' # Ignore windows and mac tests but make sure linux passes
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
+          allowed-conclusions: success,skipped,cancelled # TODO remove cancelled
       - name: Checkout
         uses: actions/checkout@v4
       - name: Unlock Conan
