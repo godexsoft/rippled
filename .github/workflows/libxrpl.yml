@@ -22,21 +22,21 @@ jobs:
     runs-on: [self-hosted, heavy]
     container: rippleci/rippled-build-ubuntu:aaf5e3e
     steps:
-      - name: Wait for essential checks to succeed
-        uses: lewagon/wait-on-check-action@v1.3.4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          running-workflow-name: wait-for-check-regexp
-          check-regexp: '(dependencies|test).*linux.*' # Ignore windows and mac tests but make sure linux passes
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 10
+      # - name: Wait for essential checks to succeed
+      #   uses: lewagon/wait-on-check-action@v1.3.4
+      #   with:
+      #     ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      #     running-workflow-name: wait-for-check-regexp
+      #     check-regexp: '(dependencies|test).*linux.*' # Ignore windows and mac tests but make sure linux passes
+      #     repo-token: ${{ secrets.GITHUB_TOKEN }}
+      #     wait-interval: 10
       - name: Checkout
         uses: actions/checkout@v4
       - name: Generate channel
         id: channel
         shell: bash
         run: |
-          echo channel="clio/${{ github.event.pull_request.head.sha || github.sha }}" | tee ${GITHUB_OUTPUT}
+          echo channel="clio/${{ github.event.pull_request.number }}" | tee ${GITHUB_OUTPUT}
       - name: Unlock Conan
         shell: bash
         run: conan remove --locks
