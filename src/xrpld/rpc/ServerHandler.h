@@ -34,6 +34,8 @@
 #include <boost/beast/ssl/ssl_stream.hpp>
 #include <boost/utility/string_view.hpp>
 
+#include <api/DefaultApi.hpp>
+
 #include <condition_variable>
 #include <map>
 #include <mutex>
@@ -99,6 +101,8 @@ private:
     std::condition_variable condition_;
     bool stopped_{false};
     std::map<std::reference_wrapper<Port const>, int> count_;
+
+    openapi_rippled::HandlerRegistry<std::string> demoHandlerReg_;
 
     // A private type used to restrict access to the ServerHandler constructor.
     struct ServerHandlerCreator

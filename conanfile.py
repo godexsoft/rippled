@@ -31,6 +31,7 @@ class Xrpl(ConanFile):
         'openssl/1.1.1v',
         'soci/4.0.3',
         'zlib/1.3.1',
+        'openapi_rippled-stubs/1.0',
     ]
 
     tool_requires = [

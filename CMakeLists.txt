@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS true)
+
 if(POLICY CMP0074)
   cmake_policy(SET CMP0074 NEW)
 endif()
@@ -120,6 +122,7 @@ endif()
 find_package(nudb REQUIRED)
 find_package(date REQUIRED)
 find_package(xxHash REQUIRED)
+find_package(openapi_rippled-stubs REQUIRED)
 
 target_link_libraries(ripple_libs INTERFACE
   ed25519::ed25519
@@ -129,6 +132,7 @@ target_link_libraries(ripple_libs INTERFACE
   secp256k1::secp256k1
   soci::soci
   SQLite::SQLite3
+  openapi_rippled-stubs::openapi_rippled-stubs
 )
 
 # Work around changes to Conan recipe for now.

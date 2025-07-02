@@ -53,6 +53,39 @@
 
 namespace ripple {
 
+namespace {
+
+struct ServerInfoHandlerImpl
+    : public openapi_rippled::ServerInfoHandlerBase<rpc>
+{
+    ripple::Expected<
+        openapi_rippled::model::ServerInfoResponse,
+        openapi_rippled::Error>
+    process(
+        openapi_rippled::model::ServerInfoRequestBase const& req,
+        std::string const& ctx) override
+    {
+        using namespace openapi_rippled::model;  // generated name of namespace
+                                                 // can be adjusted in openapi
+
+        auto info = Info{};
+        info.setUptime(123.45);
+        info.setBuildVersion("2.5.0 test");
+
+        auto resp = ServerInfoSuccessResponse{};
+        resp.setStatus(openapi_rippled::model::ServerInfoSuccessResponseBase::
+                           StatusEnum::SUCCESS);
+        resp.setInfo(std::move(info));
+
+        auto tmp = ServerInfoResponse{};
+        tmp.setResult(std::move(resp));
+
+        return tmp;
+    }
+};
+
+}  // namespace
+
 static bool
 isStatusRequest(http_request_type const& request)
 {
@@ -120,6 +153,9 @@ ServerHandler::ServerHandler(
     rpc_requests_ = group->make_counter("requests");
     rpc_size_ = group->make_event("size");
     rpc_time_ = group->make_event("time");
+
+    demoHandlerReg_.bind<openapi_rippled::ServerInfoHandlerTag>(
+        std::make_shared<ServerInfoHandlerImpl>());
 }
 
 ServerHandler::~ServerHandler()
@@ -311,6 +347,27 @@ ServerHandler::onRequest(Session& session)
         HTTPReply(403, "Forbidden", makeOutput(session), app_.journal("RPC"));
         session.close(true);
         return;
+    }
+
+    // STOP! DEMO TIMEEEE
+    auto const target = session.request().target();
+    if (target != "/")
+    {
+        for (auto [endpoint, handler] : demoHandlerReg_.endpoints())
+        {
+            if (target == endpoint)
+            {
+                auto const res = handler->handle("{}", "context here");
+                HTTPReply(
+                    200,
+                    res.has_value() ? res.value() : res.error().message,
+                    makeOutput(session),
+                    app_.journal("RPC"));
+
+                session.close(true);
+                return;
+            }
+        }
     }
 
     std::shared_ptr<Session> detachedSession = session.detach();
