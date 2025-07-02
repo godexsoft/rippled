@@ -34,6 +34,7 @@
 #include <boost/beast/ssl/ssl_stream.hpp>
 #include <boost/utility/string_view.hpp>
 
+#include "xrpld/rpc/Context.h"
 #include <api/DefaultApi.hpp>
 
 #include <condition_variable>
@@ -102,7 +103,7 @@ private:
     bool stopped_{false};
     std::map<std::reference_wrapper<Port const>, int> count_;
 
-    openapi_rippled::HandlerRegistry<std::string> demoHandlerReg_;
+    openapi_rippled::HandlerRegistry<RPC::JsonContext> demoHandlerReg_;
 
     // A private type used to restrict access to the ServerHandler constructor.
     struct ServerHandlerCreator

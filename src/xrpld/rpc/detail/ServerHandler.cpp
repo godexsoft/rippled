@@ -48,6 +48,8 @@
 #include <boost/beast/http/fields.hpp>
 #include <boost/beast/http/string_body.hpp>
 
+#include "xrpld/rpc/Context.h"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -56,14 +58,14 @@ namespace ripple {
 namespace {
 
 struct ServerInfoHandlerImpl
-    : public openapi_rippled::ServerInfoHandlerBase<rpc>
+    : public openapi_rippled::ServerInfoHandlerBase<RPC::JsonContext>
 {
     ripple::Expected<
         openapi_rippled::model::ServerInfoResponse,
         openapi_rippled::Error>
     process(
         openapi_rippled::model::ServerInfoRequestBase const& req,
-        std::string const& ctx) override
+        RPC::JsonContext const& ctx) override
     {
         using namespace openapi_rippled::model;  // generated name of namespace
                                                  // can be adjusted in openapi
@@ -357,7 +359,22 @@ ServerHandler::onRequest(Session& session)
         {
             if (target == endpoint)
             {
-                auto const res = handler->handle("{}", "context here");
+                Resource::Consumer c;
+                Resource::Charge ch(1);
+                RPC::JsonContext context{
+                    {app_.journal("RPC"),
+                     app_,
+                     ch,
+                     app_.getOPs(),
+                     app_.getLedgerMaster(),
+                     c,
+                     Role::USER,
+                     {},
+                     {},
+                     RPC::apiVersionIfUnspecified},
+                    {},
+                    {}};
+                auto const res = handler->handle("{}", context);
                 HTTPReply(
                     200,
                     res.has_value() ? res.value() : res.error().message,
