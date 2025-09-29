@@ -20,9 +20,9 @@
 #include <xrpld/app/misc/AMMHelpers.h>
 #include <xrpld/app/misc/AMMUtils.h>
 #include <xrpld/app/tx/detail/AMMWithdraw.h>
-#include <xrpld/ledger/Sandbox.h>
 
 #include <xrpl/basics/Number.h>
+#include <xrpl/ledger/Sandbox.h>
 #include <xrpl/protocol/AMMCore.h>
 #include <xrpl/protocol/TxFlags.h>
 
@@ -311,24 +311,9 @@ AMMWithdraw::applyGuts(Sandbox& sb)
     if (sb.rules().enabled(fixAMMv1_1))
     {
         if (auto const res =
-                isOnlyLiquidityProvider(sb, lpTokens.issue(), account_);
+                verifyAndAdjustLPTokenBalance(sb, lpTokens, ammSle, account_);
             !res)
             return {res.error(), false};
-        else if (res.value())
-        {
-            if (withinRelativeDistance(
-                    lpTokens,
-                    ammSle->getFieldAmount(sfLPTokenBalance),
-                    Number{1, -3}))
-            {
-                ammSle->setFieldAmount(sfLPTokenBalance, lpTokens);
-                sb.update(ammSle);
-            }
-            else
-            {
-                return {tecAMM_INVALID_TOKENS, false};
-            }
-        }
     }
 
     auto const tfee = getTradingFee(ctx_.view(), *ammSle, account_);

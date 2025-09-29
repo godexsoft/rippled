@@ -23,11 +23,11 @@
 #include <xrpld/app/paths/detail/FlatSets.h>
 #include <xrpld/app/paths/detail/Steps.h>
 #include <xrpld/app/tx/detail/OfferStream.h>
-#include <xrpld/ledger/PaymentSandbox.h>
 
 #include <xrpl/basics/Log.h>
 #include <xrpl/basics/contract.h>
 #include <xrpl/beast/utility/instrumentation.h>
+#include <xrpl/ledger/PaymentSandbox.h>
 #include <xrpl/protocol/Book.h>
 #include <xrpl/protocol/Feature.h>
 #include <xrpl/protocol/IOUAmount.h>
@@ -743,7 +743,6 @@ BookStep<TIn, TOut, TDerived>::forEachOffer(
     FlowOfferStream<TIn, TOut> offers(
         sb, afView, book_, sb.parentCloseTime(), counter, j_);
 
-    bool const flowCross = afView.rules().enabled(featureFlowCross);
     bool offerAttempted = false;
     std::optional<Quality> ofrQ;
     auto execOffer = [&](auto& offer) {
@@ -760,8 +759,8 @@ BookStep<TIn, TOut, TDerived>::forEachOffer(
 
         // Make sure offer owner has authorization to own IOUs from issuer.
         // An account can always own XRP or their own IOUs.
-        if (flowCross && (!isXRP(offer.issueIn().currency)) &&
-            (offer.owner() != offer.issueIn().account))
+        if (!isXRP(offer.issueIn().currency) &&
+            offer.owner() != offer.issueIn().account)
         {
             auto const& issuerID = offer.issueIn().account;
             auto const issuer = afView.read(keylet::account(issuerID));

@@ -17,10 +17,9 @@
 
 #include <test/jtx.h>
 
-#include <xrpld/ledger/BookDirs.h>
-#include <xrpld/ledger/Sandbox.h>
-
 #include <xrpl/basics/random.h>
+#include <xrpl/ledger/BookDirs.h>
+#include <xrpl/ledger/Sandbox.h>
 #include <xrpl/protocol/Feature.h>
 #include <xrpl/protocol/Protocol.h>
 #include <xrpl/protocol/jss.h>
@@ -421,7 +420,7 @@ struct Directory_test : public beast::unit_test::suite
         };
 
         // fixPreviousTxnID is disabled.
-        Env env(*this, supported_amendments() - fixPreviousTxnID);
+        Env env(*this, testable_amendments() - fixPreviousTxnID);
         env.fund(XRP(10000), alice, gw);
         env.close();
         env.trust(USD(1000), alice);

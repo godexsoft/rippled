@@ -116,7 +116,7 @@ private:
     friend std::unique_ptr<ServerHandler>
     make_ServerHandler(
         Application& app,
-        boost::asio::io_service&,
+        boost::asio::io_context&,
         JobQueue&,
         NetworkOPs&,
         Resource::Manager&,
@@ -127,7 +127,7 @@ public:
     ServerHandler(
         ServerHandlerCreator const&,
         Application& app,
-        boost::asio::io_service& io_service,
+        boost::asio::io_context& io_context,
         JobQueue& jobQueue,
         NetworkOPs& networkOPs,
         Resource::Manager& resourceManager,
@@ -228,7 +228,7 @@ setup_ServerHandler(Config const& c, std::ostream&& log);
 std::unique_ptr<ServerHandler>
 make_ServerHandler(
     Application& app,
-    boost::asio::io_service&,
+    boost::asio::io_context&,
     JobQueue&,
     NetworkOPs&,
     Resource::Manager&,
