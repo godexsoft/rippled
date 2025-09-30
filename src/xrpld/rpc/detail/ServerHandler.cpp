@@ -376,11 +376,7 @@ ServerHandler::onRequest(Session& session)
                 auto const res = handler->handle(
                     buffers_to_string(session.request().body().data()),
                     context);
-                HTTPReply(
-                    200,
-                    res.has_value() ? res.value() : res.error().message,
-                    makeOutput(session),
-                    app_.journal("RPC"));
+                HTTPReply(200, res, makeOutput(session), app_.journal("RPC"));
 
                 session.close(true);
                 return;

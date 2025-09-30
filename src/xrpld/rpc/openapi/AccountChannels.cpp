@@ -32,6 +32,7 @@
 
 #include <model/AccountChannelsErrorResponseCodes.hpp>
 #include <model/AccountChannelsResponse.hpp>
+#include <model/UniversalErrorResponseCodes.hpp>
 
 #include <variant>
 
@@ -99,12 +100,11 @@ AccountChannelsHandlerImpl::process(
 
     auto result = RPC::lookupLedger(ledger, context);
     if (!ledger)
-        return Unexpected(AccountChannelsErrorResponseCodes::LGRNOTFOUND);
+        return Unexpected(UniversalErrorResponseCodes::LGRNOTFOUND);
 
     auto id = parseBase58<AccountID>(req.getAccount());
     if (!id)
-        return Unexpected(
-            AccountChannelsErrorResponseCodes::ACTNOTFOUND);  // todo: malformed
+        return Unexpected(AccountChannelsErrorResponseCodes::ACTMALFORMED);
 
     AccountID const accountID{std::move(id.value())};
     if (!ledger->exists(keylet::account(accountID)))
@@ -115,19 +115,18 @@ AccountChannelsHandlerImpl::process(
         return strDst.empty() ? std::nullopt : parseBase58<AccountID>(strDst);
     }();
     if (!strDst.empty() && !raDstAccount)
-        return Unexpected(
-            AccountChannelsErrorResponseCodes::ACTNOTFOUND);  // todo: malformed
+        return Unexpected(AccountChannelsErrorResponseCodes::ACTMALFORMED);
 
     unsigned int limit;
     if (auto err = readLimitField(
             limit, RPC::Tuning::accountChannels, context))  // context.params?
         return Unexpected(
-            AccountChannelsErrorResponseCodes::
+            UniversalErrorResponseCodes::
                 INVALIDPARAMS);  // todo: should use err here somehow to get
                                  // message. or just rewrite readLimitField
 
     if (limit == 0u)
-        return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+        return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
 
     std::vector<Channel> channels;
     struct VisitData
@@ -148,13 +147,13 @@ AccountChannelsHandlerImpl::process(
         std::stringstream marker(req.getMarker().value());
         std::string value;
         if (!std::getline(marker, value, ','))
-            return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+            return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
 
         if (!startAfter.parseHex(value))
-            return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+            return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
 
         if (!std::getline(marker, value, ','))
-            return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+            return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
 
         try
         {
@@ -162,7 +161,7 @@ AccountChannelsHandlerImpl::process(
         }
         catch (boost::bad_lexical_cast&)
         {
-            return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+            return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
         }
 
         // We then must check if the object pointed to by the marker is actually
@@ -170,10 +169,10 @@ AccountChannelsHandlerImpl::process(
         auto const sle = ledger->read({ltANY, startAfter});
 
         if (!sle)
-            return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+            return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
 
         if (!RPC::isRelatedToAccount(*ledger, sle, accountID))
-            return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+            return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
     }
 
     auto count = 0;
@@ -210,7 +209,7 @@ AccountChannelsHandlerImpl::process(
                 return true;
             }))
     {
-        return Unexpected(AccountChannelsErrorResponseCodes::INVALIDPARAMS);
+        return Unexpected(UniversalErrorResponseCodes::INVALIDPARAMS);
     }
 
     auto resp = AccountChannelsSuccessResponse{};
