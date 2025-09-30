@@ -27,6 +27,7 @@
 #include <xrpld/rpc/detail/RPCHelpers.h>
 #include <xrpld/rpc/detail/Tuning.h>
 #include <xrpld/rpc/json_body.h>
+#include <xrpld/rpc/openapi/AccountChannels.h>
 
 #include <xrpl/basics/Log.h>
 #include <xrpl/basics/base64.h>
@@ -49,6 +50,7 @@
 #include <boost/beast/http/string_body.hpp>
 
 #include "xrpld/rpc/Context.h"
+#include <api/DefaultApi.hpp>
 
 #include <algorithm>
 #include <stdexcept>
@@ -60,12 +62,11 @@ namespace {
 struct ServerInfoHandlerImpl
     : public openapi_rippled::ServerInfoHandlerBase<RPC::JsonContext>
 {
-    ripple::Expected<
-        openapi_rippled::model::ServerInfoResponse,
-        openapi_rippled::Error>
-    process(
-        openapi_rippled::model::ServerInfoRequestBase const& req,
-        RPC::JsonContext const& ctx) override
+    ripple::
+        Expected<openapi_rippled::model::ServerInfoSuccessResponse, ErrorCodes>
+        process(
+            openapi_rippled::model::ServerInfoRequestBase const&,
+            RPC::JsonContext& ctx) override
     {
         using namespace openapi_rippled::model;  // generated name of namespace
                                                  // can be adjusted in openapi
@@ -79,10 +80,7 @@ struct ServerInfoHandlerImpl
                            StatusEnum::SUCCESS);
         resp.setInfo(std::move(info));
 
-        auto tmp = ServerInfoResponse{};
-        tmp.setResult(std::move(resp));
-
-        return tmp;
+        return resp;
     }
 };
 
@@ -158,6 +156,8 @@ ServerHandler::ServerHandler(
 
     demoHandlerReg_.bind<openapi_rippled::ServerInfoHandlerTag>(
         std::make_shared<ServerInfoHandlerImpl>());
+    demoHandlerReg_.bind<openapi_rippled::AccountChannelsHandlerTag>(
+        std::make_shared<AccountChannelsHandlerImpl>());
 }
 
 ServerHandler::~ServerHandler()
@@ -373,7 +373,9 @@ ServerHandler::onRequest(Session& session)
                      RPC::apiVersionIfUnspecified},
                     {},
                     {}};
-                auto const res = handler->handle("{}", context);
+                auto const res = handler->handle(
+                    buffers_to_string(session.request().body().data()),
+                    context);
                 HTTPReply(
                     200,
                     res.has_value() ? res.value() : res.error().message,
