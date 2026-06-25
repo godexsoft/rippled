@@ -2,6 +2,7 @@
 
 #include <xrpld/rpc/Context.h>
 #include <xrpld/rpc/Role.h>
+#include <xrpld/rpc/detail/RpcSpecView.hpp>
 #include <xrpld/rpc/handlers/Handlers.h>
 #include <xrpld/rpc/handlers/ledger/Ledger.h>
 #include <xrpld/rpc/handlers/server_info/Version.h>
@@ -48,18 +49,29 @@ handle(JsonContext& context, Object& object)
         context.apiVersion >= HandlerImpl::minApiVer &&
             context.apiVersion <= HandlerImpl::maxApiVer,
         "xrpl::RPC::handle : valid API version");
-    HandlerImpl handler(context);
 
-    auto status = handler.check();
-    if (status)
+    auto const specView = HandlerImpl::spec(context.apiVersion);
+    if (auto r = specView.process(context.params); !r)
     {
+        auto status = toRippleStatus(r.error());
         status.inject(object);
+        return status;
     }
-    else
+
+    // Surface non-fatal spec warnings (e.g. deprecated fields). Injected before
+    // the handler runs so they accompany the response even if it later errors.
+    injectSpecWarnings(object, specView.check(context.params));
+
+    auto const input = HandlerImpl::readInput(context.params);
+    HandlerImpl handler(context);
+    auto result = handler.process(input);
+    if (!result)
     {
-        handler.writeResult(object);
+        result.error().inject(object);
+        return result.error();
     }
-    return status;
+    handler.writeResult(object, *result);
+    return Status::kOK;
 }
 
 template <typename HandlerImpl>
@@ -423,7 +435,7 @@ public:
     }
 
     [[nodiscard]] Handler const*
-    getHandler(unsigned version, bool betaEnabled, std::string const& name) const
+    getHandler(uint32_t version, bool betaEnabled, std::string const& name) const
     {
         if (version < RPC::kApiMinimumSupportedVersion ||
             version > (betaEnabled ? RPC::kApiBetaVersion : RPC::kApiMaximumSupportedVersion))
@@ -475,7 +487,7 @@ private:
 }  // namespace
 
 Handler const*
-getHandler(unsigned version, bool betaEnabled, std::string const& name)
+getHandler(uint32_t version, bool betaEnabled, std::string const& name)
 {
     return HandlerTable::instance().getHandler(version, betaEnabled, name);
 }

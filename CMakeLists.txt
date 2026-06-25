@@ -107,6 +107,9 @@ target_link_libraries(
         SQLite::SQLite3
 )
 
+include(deps/rpcspec)
+target_link_libraries(xrpl_libs INTERFACE rpcspec::rpcspec)
+
 option(rocksdb "Enable RocksDB" ON)
 if(rocksdb)
     find_package(RocksDB REQUIRED)

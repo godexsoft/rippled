@@ -707,6 +707,41 @@ class LedgerRPC_test : public beast::unit_test::Suite
         }
     }
 
+    void
+    testDeprecatedLedgerField()
+    {
+        testcase("Deprecated ledger field");
+        using namespace test::jtx;
+
+        Env env{*this};
+        env.close();
+
+        {
+            // Valid value: request succeeds AND carries a deprecation warning,
+            // produced by the spec's check() phase (not hand-rolled).
+            json::Value jvParams;
+            jvParams[jss::ledger] = "validated";
+            auto const jrr = env.rpc("json", "ledger", to_string(jvParams))[jss::result];
+            BEAST_EXPECT(jrr.isMember(jss::ledger));
+            BEAST_EXPECT(
+                jrr.isMember(jss::warnings) && jrr[jss::warnings].isArray() &&
+                jrr[jss::warnings].size() == 1 &&
+                jrr[jss::warnings][0u][jss::id].asInt() == WarnRpcFieldsDeprecated);
+        }
+        {
+            // Invalid value: the response still surfaces the deprecation warning
+            // alongside the invalidParams error.
+            json::Value jvParams;
+            jvParams[jss::ledger] = "hello";
+            auto const jrr = env.rpc("json", "ledger", to_string(jvParams))[jss::result];
+            BEAST_EXPECT(jrr[jss::error] == "invalidParams");
+            BEAST_EXPECT(
+                jrr.isMember(jss::warnings) && jrr[jss::warnings].isArray() &&
+                jrr[jss::warnings].size() == 1 &&
+                jrr[jss::warnings][0u][jss::id].asInt() == WarnRpcFieldsDeprecated);
+        }
+    }
+
 public:
     void
     run() override
@@ -721,6 +756,7 @@ public:
         testNoQueue();
         testQueue();
         testLedgerAccountsOption();
+        testDeprecatedLedgerField();
     }
 };
 

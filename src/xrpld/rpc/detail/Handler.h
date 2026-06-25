@@ -8,6 +8,8 @@
 #include <xrpl/protocol/ApiVersion.h>
 #include <xrpl/server/NetworkOPs.h>
 
+#include <cstdint>
+
 namespace json {
 class Object;
 }  // namespace json
@@ -32,12 +34,12 @@ struct Handler
     Role role;
     RPC::Condition condition;
 
-    unsigned minApiVer = kApiMinimumSupportedVersion;
-    unsigned maxApiVer = kApiMaximumValidVersion;
+    uint32_t minApiVer = kApiMinimumSupportedVersion;
+    uint32_t maxApiVer = kApiMaximumValidVersion;
 };
 
 Handler const*
-getHandler(unsigned int version, bool betaEnabled, std::string const&);
+getHandler(uint32_t version, bool betaEnabled, std::string const&);
 
 /** Return a json::ValueType::Object with a single entry. */
 template <class Value>
