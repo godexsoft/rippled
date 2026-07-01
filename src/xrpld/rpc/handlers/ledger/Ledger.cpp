@@ -24,6 +24,7 @@
 
 #include <grpcpp/support/status.h>
 #include <org/xrpl/rpc/v1/get_ledger.pb.h>
+#include <rpcspec/HandlerForDefs.hpp>
 #include <rpcspec/handlers/ledger/Spec.hpp>
 
 #include <chrono>
@@ -33,40 +34,15 @@
 #include <string>
 #include <utility>
 
+// Confine the handler's consteval spec instantiation to this translation unit; the
+// spec-dispatching TUs (Handler.cpp) see only HandlerFor<Input>'s declarations.
+template struct rpc::spec::HandlerFor<rpc::spec::handlers::ledger::Input>;
+
 namespace xrpl {
 namespace RPC {
 
-XrplRpcSpecView
-LedgerHandler::spec([[maybe_unused]] uint32_t apiVersion)
-{
-    return rpc::spec::handlers::ledger::kSpec;
-}
-
 LedgerHandler::LedgerHandler(JsonContext& context) : context_(context)
 {
-}
-
-LedgerHandler::Input
-LedgerHandler::readInput(json::Value const& params)
-{
-    Input input;
-    auto getBool = [&](json::StaticString const& key) -> bool {
-        return params.isMember(key) && params[key].asBool();
-    };
-    input.full = getBool(jss::full);
-    input.accounts = getBool(jss::accounts);
-    input.expand = getBool(jss::expand);
-    input.binary = getBool(jss::binary);
-    input.ownerFunds = getBool(jss::owner_funds);
-    input.queue = getBool(jss::queue);
-    input.transactions = getBool(jss::transactions);
-    if (params.isMember(jss::ledger_hash))
-        input.ledgerHash = params[jss::ledger_hash].asString();
-    if (params.isMember(jss::ledger_index) && params[jss::ledger_index].isUInt())
-        input.ledgerIndex = params[jss::ledger_index].asUInt();
-    input.ledgerSpecified = params.isMember(jss::ledger) || params.isMember(jss::ledger_hash) ||
-        params.isMember(jss::ledger_index);
-    return input;
 }
 
 LedgerHandler::Result
@@ -81,7 +57,7 @@ LedgerHandler::process(Input const& input)
         (input.ownerFunds ? static_cast<int>(LedgerFill::Options::OwnerFunds) : 0) |
         (input.queue ? static_cast<int>(LedgerFill::Options::DumpQueue) : 0);
 
-    if (input.ledgerSpecified)
+    if (!input.ledger.isUnspecified())
     {
         if (auto s = lookupLedger(out.ledger, context_, out.result))
             return std::unexpected{s};

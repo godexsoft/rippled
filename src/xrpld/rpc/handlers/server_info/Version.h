@@ -1,17 +1,20 @@
 #pragma once
 
-#include <xrpld/rpc/detail/RpcSpecView.hpp>
+#include <xrpld/rpc/Context.h>
+#include <xrpld/rpc/Role.h>
+#include <xrpld/rpc/Status.h>
+#include <xrpld/rpc/detail/Handler.h>
 
 #include <xrpl/json/json_value.h>
 #include <xrpl/protocol/ApiVersion.h>
-
-#include <rpcspec/RpcSpec.hpp>
 
 #include <cstdint>
 #include <expected>
 
 namespace xrpl::RPC {
 
+// 'version' takes no parameters, so it is a plain (non-spec) handler: the RPC
+// framework default-constructs its empty Input rather than parsing one from a spec.
 class VersionHandler
 {
 public:
@@ -35,23 +38,10 @@ public:
         return Output{};
     }
 
-    static Input
-    readInput([[maybe_unused]] json::Value const&)
-    {
-        return {};
-    }
-
     void
     writeResult(json::Value& obj, [[maybe_unused]] Output const&) const
     {
         setVersion(obj, apiVersion_, betaEnabled_);
-    }
-
-    static XrplRpcSpecView
-    spec([[maybe_unused]] uint32_t)
-    {
-        static constexpr rpc::spec::RpcSpec<> kSpec{};
-        return kSpec;
     }
 
     // NOLINTBEGIN(readability-identifier-naming)

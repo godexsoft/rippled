@@ -9,10 +9,15 @@
 #include <xrpl/server/NetworkOPs.h>
 
 #include <cstdint>
+#include <ostream>
 
 namespace json {
 class Object;
 }  // namespace json
+
+namespace rpc::spec {
+class SpecDumpWriter;
+}  // namespace rpc::spec
 
 namespace xrpl::RPC {
 
@@ -29,6 +34,10 @@ struct Handler
     template <class JsonValue>
     using Method = std::function<Status(JsonContext&, JsonValue&)>;
 
+    // Dumps the handler's input spec for a given API version; null for handlers
+    // that have no spec (old-style handlers and no-input handlers like version).
+    using SpecDumpFn = void (*)(rpc::spec::SpecDumpWriter&, uint32_t apiVersion);
+
     char const* name;
     Method<json::Value> valueMethod;
     Role role;
@@ -36,7 +45,13 @@ struct Handler
 
     uint32_t minApiVer = kApiMinimumSupportedVersion;
     uint32_t maxApiVer = kApiMaximumValidVersion;
+
+    SpecDumpFn specDump = nullptr;
 };
+
+/** Dump the input specs of every registered RPC handler to @p os for @p apiVersion. */
+void
+dumpAllRpcSpecs(std::ostream& os, uint32_t apiVersion);
 
 Handler const*
 getHandler(uint32_t version, bool betaEnabled, std::string const&);

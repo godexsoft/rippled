@@ -12,12 +12,19 @@
 #include <xrpl/json/json_value.h>
 #include <xrpl/protocol/ApiVersion.h>
 
+#include <boost/json/value.hpp>
+
+#include <rpcspec/SpecDumpWriter.hpp>
+
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <ostream>
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace xrpl::RPC {
 namespace {
@@ -41,6 +48,15 @@ byRef(Function const& f)
     };
 }
 
+// A spec-based handler derives from rpc::spec::HandlerFor<Input>, which supplies the
+// static parseInput()/spec() entry points below. Handlers without a spec (e.g. version)
+// simply default-construct their Input.
+template <typename HandlerImpl>
+concept SpecBasedHandler = requires(boost::json::value jv, uint32_t apiVersion) {
+    { HandlerImpl::parseInput(jv, apiVersion) };
+    { HandlerImpl::spec(apiVersion) };
+};
+
 template <class Object, class HandlerImpl>
 Status
 handle(JsonContext& context, Object& object)
@@ -50,19 +66,28 @@ handle(JsonContext& context, Object& object)
             context.apiVersion <= HandlerImpl::maxApiVer,
         "xrpl::RPC::handle : valid API version");
 
-    auto const specView = HandlerImpl::spec(context.apiVersion);
-    if (auto r = specView.process(context.params); !r)
+    auto const apiVersion = static_cast<uint32_t>(context.apiVersion);
+
+    typename HandlerImpl::Input input{};
+    if constexpr (SpecBasedHandler<HandlerImpl>)
     {
-        auto status = toRippleStatus(r.error());
-        status.inject(object);
-        return status;
+        // The spec validates + parses over boost::json; rippled's params are json::Value.
+        boost::json::value const params = toBoostJson(context.params);
+
+        // Surface non-fatal spec warnings (e.g. deprecated fields). Injected before
+        // the handler runs so they accompany the response even if it later errors.
+        injectSpecWarnings(object, HandlerImpl::spec(apiVersion).check(params));
+
+        auto parsed = HandlerImpl::parseInput(params, apiVersion);
+        if (!parsed)
+        {
+            auto status = toRippleStatus(parsed.error());
+            status.inject(object);
+            return status;
+        }
+        input = std::move(parsed).value();
     }
 
-    // Surface non-fatal spec warnings (e.g. deprecated fields). Injected before
-    // the handler runs so they accompany the response even if it later errors.
-    injectSpecWarnings(object, specView.check(context.params));
-
-    auto const input = HandlerImpl::readInput(context.params);
     HandlerImpl handler(context);
     auto result = handler.process(input);
     if (!result)
@@ -78,13 +103,22 @@ template <typename HandlerImpl>
 Handler
 handlerFrom()
 {
+    Handler::SpecDumpFn specDump = nullptr;
+    if constexpr (SpecBasedHandler<HandlerImpl>)
+    {
+        specDump = [](rpc::spec::SpecDumpWriter& writer, uint32_t apiVersion) {
+            HandlerImpl::spec(apiVersion).dump(writer);
+        };
+    }
+
     return {
         HandlerImpl::name,
         &handle<json::Value, HandlerImpl>,
         HandlerImpl::role,
         HandlerImpl::condition,
         HandlerImpl::minApiVer,
-        HandlerImpl::maxApiVer};
+        HandlerImpl::maxApiVer,
+        specDump};
 }
 
 Handler const kHandlerArray[]{
@@ -496,6 +530,40 @@ std::set<char const*>
 getHandlerNames()
 {
     return HandlerTable::instance().getHandlerNames();
+}
+
+void
+dumpAllRpcSpecs(std::ostream& os, uint32_t apiVersion)
+{
+    auto const& table = HandlerTable::instance();
+
+    // getHandlerNames() returns a set ordered by pointer; re-sort by name.
+    auto const names = table.getHandlerNames();
+    std::vector<std::string> sorted{names.begin(), names.end()};
+    std::ranges::sort(sorted);
+
+    rpc::spec::SpecDumpWriter writer{os};
+    os << "apiVersion: " << apiVersion << "\nhandlers:\n";
+    writer.push();
+    for (auto const& name : sorted)
+    {
+        // betaEnabled=true so beta-only handlers are included in the dump.
+        auto const* handler = table.getHandler(apiVersion, true, name);
+        if (handler == nullptr)
+            continue;
+
+        writer.bulletGroup(name, [&] {
+            if (handler->specDump != nullptr)
+            {
+                handler->specDump(writer, apiVersion);
+            }
+            else
+            {
+                writer.line("(no inputs)");
+            }
+        });
+    }
+    writer.pop();
 }
 
 }  // namespace xrpl::RPC

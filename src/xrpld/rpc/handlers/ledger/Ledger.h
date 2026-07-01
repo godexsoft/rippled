@@ -7,13 +7,13 @@
 #include <xrpld/rpc/Role.h>
 #include <xrpld/rpc/Status.h>
 #include <xrpld/rpc/detail/Handler.h>
-#include <xrpld/rpc/detail/RpcSpecView.hpp>
 
 #include <xrpl/json/json_value.h>
 #include <xrpl/ledger/ReadView.h>
 #include <xrpl/protocol/ApiVersion.h>
 #include <xrpl/protocol/jss.h>
 
+#include <rpcspec/HandlerFor.hpp>
 #include <rpcspec/handlers/ledger/Types.hpp>
 
 #include <cstdint>
@@ -35,11 +35,9 @@ struct JsonContext;
 //    full: true | false    // optional, defaults to false.
 // }
 
-class LedgerHandler
+class LedgerHandler : public rpc::spec::HandlerFor<rpc::spec::handlers::ledger::Input>
 {
 public:
-    using Input = rpc::spec::handlers::ledger::Input;
-
     struct Output
     {
         std::shared_ptr<ReadView const> ledger;
@@ -57,12 +55,6 @@ public:
 
     void
     writeResult(json::Value&, Output const&);
-
-    static XrplRpcSpecView
-    spec(uint32_t apiVersion);
-
-    static Input
-    readInput(json::Value const& params);
 
     // NOLINTBEGIN(readability-identifier-naming)
     static constexpr char name[] = "ledger";

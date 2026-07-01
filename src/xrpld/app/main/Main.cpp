@@ -2,6 +2,7 @@
 #include <xrpld/core/Config.h>
 #include <xrpld/core/TimeKeeper.h>
 #include <xrpld/rpc/RPCCall.h>
+#include <xrpld/rpc/detail/Handler.h>
 #include <xrpld/rpc/handlers/server_info/ServerDefinitions.h>
 
 #include <xrpl/basics/Log.h>
@@ -380,6 +381,10 @@ run(int argc, char** argv)
         "silent", "No output to the console after startup.")("standalone,a", "Run with no peers.")(
         "verbose,v", "Verbose logging.")(
         "definitions", "Output server definitions as JSON and exit.")(
+        "dump-spec",
+        po::value<uint32_t>()->implicit_value(1U),
+        "Dump RPC handler input specs to stdout and exit. Optional value selects the "
+        "API version (default 1).")(
         "force_ledger_present_range",
         po::value<std::string>(),
         "Specify the range of present ledgers for testing purposes. Min and "
@@ -517,6 +522,14 @@ run(int argc, char** argv)
     {
         // LCOV_EXCL_START
         std::cout << json::FastWriter().write(getServerDefinitionsJson());
+        return 0;
+        // LCOV_EXCL_STOP
+    }
+
+    if (vm.contains("dump-spec"))
+    {
+        // LCOV_EXCL_START
+        RPC::dumpAllRpcSpecs(std::cout, vm["dump-spec"].as<uint32_t>());
         return 0;
         // LCOV_EXCL_STOP
     }
