@@ -171,7 +171,7 @@ class Xrpl(ConanFile):
         tc.variables["static"] = self.options.static
         tc.variables["unity"] = self.options.unity
         tc.variables["xrpld"] = self.options.xrpld
-        tc.preprocessor_definitions["RPCSPEC_IS_RIPPLED"] = "1"
+        tc.preprocessor_definitions["RPCSPEC_IS_XRPLD"] = "1"
         tc.generate()
 
     def build(self):
