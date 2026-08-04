@@ -1,15 +1,20 @@
 #pragma once
 
-#include <xrpld/app/ledger/LedgerMaster.h>
 #include <xrpld/rpc/RPCHandler.h>
+#include <xrpld/rpc/Role.h>
 #include <xrpld/rpc/Status.h>
 #include <xrpld/rpc/detail/Tuning.h>
 
+#include <xrpl/basics/Log.h>
+#include <xrpl/json/json_value.h>
 #include <xrpl/protocol/ApiVersion.h>
+#include <xrpl/protocol/ErrorCodes.h>
+#include <xrpl/protocol/jss.h>
 #include <xrpl/server/NetworkOPs.h>
 
-#include <cstdint>
-#include <ostream>
+#include <functional>
+#include <set>
+#include <string>
 
 namespace json {
 class Object;
@@ -49,14 +54,21 @@ struct Handler
     SpecDumpFn specDump = nullptr;
 };
 
-/** Dump the input specs of every registered RPC handler to @p os for @p apiVersion. */
+/**
+ * Dump the input specs of every registered RPC handler to @p os for @p apiVersion.
+ *
+ * @param os Ostream to dump into.
+ * @param apiVersion The version of the API to dump.
+ */
 void
 dumpAllRpcSpecs(std::ostream& os, uint32_t apiVersion);
 
 Handler const*
 getHandler(uint32_t version, bool betaEnabled, std::string const&);
 
-/** Return a json::ValueType::Object with a single entry. */
+/**
+ * Return a json::ValueType::Object with a single entry.
+ */
 template <class Value>
 json::Value
 makeObjectValue(Value const& value, json::StaticString const& field = jss::message)
@@ -66,7 +78,9 @@ makeObjectValue(Value const& value, json::StaticString const& field = jss::messa
     return result;
 }
 
-/** Return names of all methods. */
+/**
+ * Return names of all methods.
+ */
 std::set<char const*>
 getHandlerNames();
 
